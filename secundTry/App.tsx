@@ -1,11 +1,36 @@
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
-import { useEffect } from 'react';
+import {
+  Camera,
+  useCameraDevice,
+  useCameraPermission,
+  useFrameProcessor,
+} from 'react-native-vision-camera';
+import { Worklets } from 'react-native-worklets-core';
+import { useEffect, useCallback, useRef, useMemo } from 'react';
 
 export default function App() {
-  const device = useCameraDevice('back');
+  const device = useCameraDevice('front');
   const { hasPermission, requestPermission } = useCameraPermission();
+
+  const lastLogRef = useRef<number>(0);
+
+  const onFrame = useMemo(
+    () =>
+      Worklets.createRunOnJS((timestamp: number) => {
+        const now = Date.now();
+        if (now - lastLogRef.current > 500) {
+          lastLogRef.current = now;
+          console.log('Frame timestamp (ns):', timestamp);
+        }
+      }),
+    [],
+  );
+
+  const frameProcessor = useFrameProcessor((frame) => {
+    'worklet';
+    onFrame(frame.timestamp);
+  }, [onFrame]);
 
   useEffect(() => {
     if (!hasPermission) {
@@ -35,6 +60,8 @@ export default function App() {
         style={StyleSheet.absoluteFill}
         device={device}
         isActive
+        frameProcessor={frameProcessor}
+        pixelFormat="yuv"
       />
       <StatusBar style="light" />
     </View>
