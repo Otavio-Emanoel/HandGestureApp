@@ -13,8 +13,10 @@
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
     "react-native": "0.81.5",
+    "react-native-fast-tflite": "^1.6.1",
     "react-native-vision-camera": "^4.7.3",
-    "react-native-worklets-core": "^1.6.2"
+    "react-native-worklets-core": "^1.6.2",
+    "vision-camera-resize-plugin": "^3.2.0"
   },
   "devDependencies": {
     "@babel/plugin-proposal-nullish-coalescing-operator": "^7.18.6",

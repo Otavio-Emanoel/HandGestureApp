@@ -7,11 +7,20 @@ import {
   useFrameProcessor,
 } from 'react-native-vision-camera';
 import { Worklets } from 'react-native-worklets-core';
-import { useEffect, useCallback, useRef, useMemo } from 'react';
+import { useEffect, useCallback, useRef, useMemo, useState } from 'react';
+import { useTensorflowModel } from 'react-native-fast-tflite';
+import { useResizePlugin } from 'vision-camera-resize-plugin';
+
+const HAND_MODEL = require('./assets/hand_landmark_full.tflite');
 
 export default function App() {
   const device = useCameraDevice('front');
   const { hasPermission, requestPermission } = useCameraPermission();
+  const { resize } = useResizePlugin();
+
+  const [handStatus, setHandStatus] = useState<string>('Aguardando detecção...');
+
+  const model = useTensorflowModel(HAND_MODEL);
 
   const lastLogRef = useRef<number>(0);
 
@@ -27,10 +36,45 @@ export default function App() {
     [],
   );
 
+  const onLandmarks = useMemo(
+    () =>
+      Worklets.createRunOnJS((landmarks: number[]) => {
+        if (!landmarks?.length) return;
+        setHandStatus(`Mão detectada (${(landmarks.length / 3).toFixed(0)} pontos)`);
+      }),
+    [],
+  );
+
   const frameProcessor = useFrameProcessor((frame) => {
     'worklet';
+
+    // Log de timestamp controlado
     onFrame(frame.timestamp);
-  }, [onFrame]);
+
+    // Modelo ainda não carregou? pule
+    if (model.state !== 'loaded') return;
+
+    // Redimensiona frame para o esperado pelo modelo (224x224 RGB float32)
+    const input = resize(frame, {
+      scale: { width: 224, height: 224 },
+      pixelFormat: 'rgb',
+      dataType: 'float32',
+    });
+
+    const output = model.model?.runSync([input]);
+
+    // As variantes do modelo costumam devolver um array único com 63 floats (21 landmarks * 3)
+    const first = output?.[0] as any;
+    const data: number[] | Float32Array | undefined = first?.data ?? first;
+
+    if (data && data.length >= 63) {
+      // Evita enviar muitos eventos para JS: amostra a cada ~3 frames
+      const ts = Number(frame.timestamp ?? 0);
+      if (Number.isFinite(ts) && ts % 3 === 0) {
+        onLandmarks(Array.from(data.slice(0, 63)));
+      }
+    }
+  }, [onFrame, onLandmarks, model.state]);
 
   useEffect(() => {
     if (!hasPermission) {
@@ -109,6 +153,11 @@ export default function App() {
           <Text style={styles.cardBody}>• Debounce e smoothing para gestos mais estáveis.</Text>
           <Text style={styles.cardBody}>• Mapear eventos para ScrollView/FlatList.</Text>
           <Text style={styles.cardBody}>• Adicionar feedback visual ao reconhecer gestos.</Text>
+        </View>
+
+        <View style={styles.statusCard}>
+          <Text style={styles.statusTitle}>Status da mão</Text>
+          <Text style={styles.statusBody}>{model.state === 'loaded' ? handStatus : 'Carregando modelo...'}</Text>
         </View>
       </ScrollView>
 
@@ -209,6 +258,23 @@ const styles = StyleSheet.create({
     color: '#cbd5e1',
     fontSize: 14,
     lineHeight: 20,
+  },
+  statusCard: {
+    backgroundColor: '#0f172a',
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(125, 211, 252, 0.35)',
+    gap: 6,
+  },
+  statusTitle: {
+    color: '#7dd3fc',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  statusBody: {
+    color: '#e2e8f0',
+    fontSize: 14,
   },
   cameraContainer: {
     position: 'absolute',
