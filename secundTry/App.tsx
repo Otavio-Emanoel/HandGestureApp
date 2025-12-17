@@ -12,6 +12,14 @@ import { useTensorflowModel } from 'react-native-fast-tflite';
 import { useResizePlugin } from 'vision-camera-resize-plugin';
 
 const HAND_MODEL = require('./assets/hand_landmark_full.tflite');
+const HAND_CONNECTIONS: Array<[number, number]> = [
+  [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
+  [0, 5], [5, 6], [6, 7], [7, 8], // Index
+  [5, 9], [9, 10], [10, 11], [11, 12], // Middle
+  [9, 13], [13, 14], [14, 15], [15, 16], // Ring
+  [13, 17], [17, 18], [18, 19], [19, 20], // Pinky
+  [0, 17], // Palm base to pinky base
+];
 
 export default function App() {
   const device = useCameraDevice('front');
@@ -19,6 +27,10 @@ export default function App() {
   const { resize } = useResizePlugin();
 
   const [handStatus, setHandStatus] = useState<string>('Aguardando detecção...');
+  const [landmarks, setLandmarks] = useState<Array<{x:number;y:number;z:number}>>([]);
+  const debugCountRef = useRef(0);
+
+  const [previewSize, setPreviewSize] = useState({ width: 170, height: 220 });
 
   const model = useTensorflowModel(HAND_MODEL);
 
@@ -27,10 +39,11 @@ export default function App() {
   const onFrame = useMemo(
     () =>
       Worklets.createRunOnJS((timestamp: number) => {
+        // menos ruído: loga raramente
         const now = Date.now();
-        if (now - lastLogRef.current > 500) {
+        if (now - lastLogRef.current > 4000) {
           lastLogRef.current = now;
-          console.log('Frame timestamp (ns):', timestamp);
+          console.log('Frame tick');
         }
       }),
     [],
@@ -38,9 +51,70 @@ export default function App() {
 
   const onLandmarks = useMemo(
     () =>
-      Worklets.createRunOnJS((landmarks: number[]) => {
-        if (!landmarks?.length) return;
-        setHandStatus(`Mão detectada (${(landmarks.length / 3).toFixed(0)} pontos)`);
+      Worklets.createRunOnJS((flat: number[]) => {
+        if (!flat?.length) return;
+
+        const pts = [] as Array<{x:number;y:number;z:number}>;
+        for (let i = 0; i + 2 < flat.length; i += 3) {
+          pts.push({ x: flat[i], y: flat[i + 1], z: flat[i + 2] });
+        }
+
+        // Heurística simples para filtrar falsos positivos quando não há mão.
+        const norm = pts.map((p) => ({ x: p.x / 224, y: p.y / 224, z: p.z }));
+        const xs = norm.map((p) => p.x);
+        const ys = norm.map((p) => p.y);
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minY = Math.min(...ys);
+        const maxY = Math.max(...ys);
+        const w = maxX - minX;
+        const h = maxY - minY;
+        const area = w * h;
+        const cx = (minX + maxX) / 2;
+        const cy = (minY + maxY) / 2;
+        const meanDist = norm.reduce((acc, p) => acc + Math.hypot(p.x - cx, p.y - cy), 0) / norm.length;
+
+        const validBox = area > 0.02 && area < 0.45 && w > 0.08 && h > 0.08;
+        const validSpread = meanDist > 0.05;
+        const inBounds = norm.every((p) => p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1);
+
+        if (!validBox || !validSpread || !inBounds) {
+          setLandmarks([]);
+          setHandStatus('Mão não detectada');
+          return;
+        }
+
+        setLandmarks(pts);
+        setHandStatus('Mão detectada');
+      }),
+    [],
+  );
+
+  const mappedLandmarks = useMemo(() => {
+    const { width, height } = previewSize;
+    const isFront = device?.position === 'front';
+    return landmarks.map((p) => {
+      const xClamped = Math.max(0, Math.min(224, p.x));
+      const yClamped = Math.max(0, Math.min(224, p.y));
+      const nx = xClamped / 224;
+      const ny = yClamped / 224;
+      const x = (isFront ? 1 - nx : nx) * width;
+      const y = ny * height;
+      return { x, y, z: p.z };
+    });
+  }, [landmarks, previewSize, device?.position]);
+
+  const onDebug = useMemo(
+    () =>
+      Worklets.createRunOnJS((msg: any) => {
+        // limitar logs para não poluir
+        if (debugCountRef.current >= 3) return;
+        debugCountRef.current += 1;
+        try {
+          console.log('DEBUG(frame):', JSON.stringify(msg).slice(0, 400));
+        } catch (e) {
+          console.log('DEBUG(frame):', msg);
+        }
       }),
     [],
   );
@@ -67,14 +141,26 @@ export default function App() {
     const first = output?.[0] as any;
     const data: number[] | Float32Array | undefined = first?.data ?? first;
 
-    if (data && data.length >= 63) {
-      // Evita enviar muitos eventos para JS: amostra a cada ~3 frames
-      const ts = Number(frame.timestamp ?? 0);
-      if (Number.isFinite(ts) && ts % 3 === 0) {
-        onLandmarks(Array.from(data.slice(0, 63)));
+    if (data) {
+      // Debug: sempre envie uma pequena amostra para o JS para inspecionar o formato
+      try {
+        onDebug({ len: data.length, sample: Array.from(data.slice(0, 12)) });
+      } catch (e) {}
+
+      if (data.length >= 63) {
+        // Evita enviar muitos eventos para JS: amostra a cada ~3 frames
+        const ts = Number(frame.timestamp ?? 0);
+        if (Number.isFinite(ts) && ts % 3 === 0) {
+          onLandmarks(Array.from(data.slice(0, 63)));
+        }
       }
+    } else {
+      // No output: debug
+      try {
+        onDebug({ len: 0, note: 'no output' });
+      } catch (e) {}
     }
-  }, [onFrame, onLandmarks, model.state]);
+  }, [onFrame, onLandmarks, onDebug, model.state, resize]);
 
   useEffect(() => {
     if (!hasPermission) {
@@ -170,6 +256,38 @@ export default function App() {
           pixelFormat="yuv"
         />
         <Text style={styles.previewLabel}>Preview</Text>
+        {/* Landmark overlay (normalized coordinates expected: x,y in [0..1]) */}
+        <View
+          style={styles.landmarkOverlay}
+          pointerEvents="none"
+          onLayout={(e) => {
+            const { width, height } = e.nativeEvent.layout;
+            if (width && height) {
+              setPreviewSize({ width, height });
+            }
+          }}
+        >
+          {mappedLandmarks
+            .filter((_, idx) => [4, 8, 12, 16, 20].includes(idx))
+            .map((p, i) => {
+              const left = Math.max(0, Math.min(previewSize.width - 12, p.x - 6));
+              const top = Math.max(0, Math.min(previewSize.height - 12, p.y - 6));
+              return (
+                <View
+                  key={`tip-${i}`}
+                  style={[styles.landmarkDot, { left, top }]}
+                />
+              );
+            })}
+
+          {mappedLandmarks.length > 0 && (
+            <Text style={styles.countBadge}>5 pontas</Text>
+          )}
+
+          {mappedLandmarks.length === 0 && (
+            <Text style={styles.noHandText}>Mostre a mão na câmera</Text>
+          )}
+        </View>
       </View>
 
       <StatusBar style="light" />
@@ -280,8 +398,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 24,
     right: 24,
-    width: 140,
-    height: 180,
+    width: 170,
+    height: 220,
     borderRadius: 16,
     overflow: 'hidden',
     borderWidth: 1,
@@ -303,5 +421,44 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     fontSize: 12,
     fontWeight: '600',
+  },
+  landmarkOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  landmarkDot: {
+    position: 'absolute',
+    width: 12,
+    height: 12,
+    borderRadius: 12,
+    backgroundColor: '#38bdf8',
+    borderWidth: 1,
+    borderColor: '#0b1021',
+  },
+  countBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 10,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    color: '#e2e8f0',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  noHandText: {
+    position: 'absolute',
+    bottom: 8,
+    left: 10,
+    color: '#cbd5e1',
+    fontSize: 12,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
   },
 });
