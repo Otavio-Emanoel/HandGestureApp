@@ -15,14 +15,22 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
+<<<<<<< HEAD:app.json
         "NSCameraUsageDescription": "Allow $(PRODUCT_NAME) to access your camera"
       }
+=======
+        "NSCameraUsageDescription": "Precisamos da câmera para detectar gestos."
+      },
+      "bundleIdentifier": "com.seuusuario.handgesture"
+>>>>>>> 25c9608 (Move os arquivos para outra pasta):FirstTry/app.json
     },
     "android": {
+      "package": "com.seuusuario.handgesture",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
+<<<<<<< HEAD:app.json
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
@@ -30,12 +38,22 @@
         "android.permission.CAMERA"
       ],
       "package": "com.otavioemanoel.HandGestureApp"
+=======
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
+>>>>>>> 25c9608 (Move os arquivos para outra pasta):FirstTry/app.json
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "react-native-vision-camera",
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "Precisamos da câmera para detectar gestos."
+        }
+      ],
       "react-native-fast-tflite"
     ]
   }
